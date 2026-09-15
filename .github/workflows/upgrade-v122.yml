@@ -21,6 +21,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           service = Path('app/src/main/java/com/smini/galaxyattendance/AttendanceAccessibilityService.kt')
           s = service.read_text()
@@ -28,33 +29,7 @@ jobs:
           s = s.replace('scrollForward("혜택 화면")', 'scrollForward(root, "혜택 화면")')
           s = s.replace('scrollForward("출석 페이지")', 'scrollForward(root, "출석 페이지")')
 
-          old = '''    private fun scrollForward(where: String): Boolean {
-              val metrics = resources.displayMetrics
-              val x = metrics.widthPixels / 2f
-              val startY = metrics.heightPixels * 0.85f
-              val endY = metrics.heightPixels * 0.15f
-
-              AppLog.write(
-                  this,
-                  "[$where 스크롤] 제스처 실행 X=${x.toInt()} Y=${startY.toInt()}→${endY.toInt()} duration=${SCROLL_DURATION_MS}ms"
-              )
-
-              val path = Path().apply {
-                  moveTo(x, startY)
-                  lineTo(x, endY)
-              }
-
-              val gesture = GestureDescription.Builder()
-                  .addStroke(GestureDescription.StrokeDescription(path, 0, SCROLL_DURATION_MS))
-                  .build()
-
-              val accepted = dispatchGesture(gesture, null, null)
-              AppLog.write(this, "[$where 스크롤] dispatchGesture=${if (accepted) "accepted" else "rejected"}")
-              return accepted
-          }
-          '''
-
-          new = '''    private fun scrollForward(root: AccessibilityNodeInfo?, where: String): Boolean {
+          new_scroll = '''    private fun scrollForward(root: AccessibilityNodeInfo?, where: String): Boolean {
               AppLog.write(this, "[$where 스크롤] 스크롤 시도")
 
               val scrollableNode = root?.let { findScrollableNode(it) }
@@ -133,9 +108,12 @@ jobs:
           )
           '''
 
-          if old not in s:
-              raise SystemExit('v1.2.1 scrollForward block not found')
-          s = s.replace(old, new)
+          pattern = r'    private fun scrollForward\(where: String\): Boolean \{.*?\n    \}\n\n    private fun gestureClick'
+          replacement = new_scroll + '\n    private fun gestureClick'
+          s2, count = re.subn(pattern, replacement, s, flags=re.S)
+          if count != 1:
+              raise SystemExit(f'scrollForward replacement count={count}')
+          s = s2
           s = s.replace(
               '        private const val SCROLL_DURATION_MS = 600L',
               '        private const val SCROLL_DURATION_MS = 250L\n        private const val SCROLL_START_RATIO = 0.70f\n        private const val SCROLL_END_RATIO = 0.30f'
@@ -149,7 +127,8 @@ jobs:
           readme = Path('README.md')
           r = readme.read_text()
           r = r.replace('**v1.2.1** — WebView 출석 버튼 탐색과 Bounds/스크롤 진단을 강화한 버전입니다.', '**v1.2.2** — WebView 네이티브 스크롤 우선 + 안전 구역 제스처 폴백 버전입니다.')
-          r += '''\n\n## v1.2.2 WebView 스크롤 보강\n- `isScrollable=true`인 WebView/ScrollView를 찾아 `ACTION_SCROLL_FORWARD`를 1순위로 수행합니다.\n- 필요 시 `ACTION_SCROLL_DOWN`도 시도합니다.\n- 네이티브 스크롤 실패 시 화면 높이 70% → 30%를 250ms로 스와이프합니다.\n- 하단 내비게이션/삼성페이 영역과의 충돌 및 WebView 롱프레스 오인을 줄였습니다.\n- 내부 로그에 스크롤 후보 클래스/Bounds, 네이티브 액션 성공 여부, 제스처 폴백 결과를 남깁니다.\n'''
+          if '## v1.2.2 WebView 스크롤 보강' not in r:
+              r += '''\n\n## v1.2.2 WebView 스크롤 보강\n- `isScrollable=true`인 WebView/ScrollView를 찾아 `ACTION_SCROLL_FORWARD`를 1순위로 수행합니다.\n- 필요 시 `ACTION_SCROLL_DOWN`도 시도합니다.\n- 네이티브 스크롤 실패 시 화면 높이 70% → 30%를 250ms로 스와이프합니다.\n- 하단 내비게이션/삼성페이 영역과의 충돌 및 WebView 롱프레스 오인을 줄였습니다.\n- 내부 로그에 스크롤 후보 클래스/Bounds, 네이티브 액션 성공 여부, 제스처 폴백 결과를 남깁니다.\n'''
           readme.write_text(r)
 
           workflow = Path('.github/workflows/build.yml')
