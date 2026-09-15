@@ -63,7 +63,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
         scrollStrategyIndex = 0
         lastAttendanceTargetY = null
         suppressEventRescheduleUntil = 0L
-        AppLog.write(this, "자동 탐색 세션 시작 (물리 스와이프 전용 v1.3.1)")
+        AppLog.write(this, "자동 탐색 세션 시작 (출석 액션 오탐 차단 v1.4.0)")
         handler.removeCallbacks(scanRunnable)
         handler.postDelayed(scanRunnable, 800)
     }
@@ -104,7 +104,16 @@ class AttendanceAccessibilityService : AccessibilityService() {
             return
         }
 
-        if (findAndGestureClick(root, ATTEND_KEYWORDS, includeViewId = true)) {
+        // 이벤트 WebView에 직접 진입한 상태라면 상단 제목을 출석 버튼으로 오인하지 않고
+        // CHECKIN 단계로 명시적으로 전환한다.
+        if (isAttendanceEventPage(root)) {
+            AppLog.write(this, "[상태 전환] 출석 이벤트 페이지 감지 -> CHECKIN")
+            stage = Stage.CHECKIN
+            scrollCount = 0
+            return scheduleScan(350)
+        }
+
+        if (findAttendanceButtonAndClick(root)) {
             attendanceClickCount++
             stage = Stage.VERIFY
             verifyStartedAt = System.currentTimeMillis()
@@ -154,7 +163,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
             return scheduleScan(1300)
         }
 
-        if (findAndGestureClick(root, ATTEND_KEYWORDS, includeViewId = true)) {
+        if (findAttendanceButtonAndClick(root)) {
             attendanceClickCount++
             stage = Stage.VERIFY
             verifyStartedAt = System.currentTimeMillis()
@@ -182,7 +191,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
             return retry("출석 완료 여부 확인 중")
         }
 
-        if (attendanceClickCount < MAX_ATTEND_CLICK && findAndGestureClick(root, ATTEND_KEYWORDS, includeViewId = true)) {
+        if (attendanceClickCount < MAX_ATTEND_CLICK && findAttendanceButtonAndClick(root)) {
             attendanceClickCount++
             verifyStartedAt = System.currentTimeMillis()
             AppLog.write(this, "출석 버튼 재시도 ${attendanceClickCount}/$MAX_ATTEND_CLICK")
@@ -205,6 +214,59 @@ class AttendanceAccessibilityService : AccessibilityService() {
         if (!clickedAny) {
             findAndGestureClick(root, listOf("동의", "약관"), includeViewId = false)
         }
+    }
+
+    private fun isAttendanceEventPage(root: AccessibilityNodeInfo): Boolean {
+        val nodes = allNodes(root)
+        val hasVisibleTitle = nodes.any { node ->
+            node.isVisibleToUser && AttendanceMatchRules.isEventPageTitle(
+                text = node.text,
+                contentDescription = node.contentDescription,
+                viewId = node.viewIdResourceName
+            )
+        }
+        val hasAttendanceActionInTree = nodes.any { node ->
+            AttendanceMatchRules.isExactAttendanceAction(node.text, node.contentDescription)
+        }
+        return hasVisibleTitle && hasAttendanceActionInTree
+    }
+
+    /**
+     * 출석 버튼은 일반 키워드 부분 매칭을 사용하지 않는다.
+     * 실제 로그에서 `위클리 출석체크 [명일방주]` 제목이 `출석 체크` 부분 매칭으로
+     * 오인되어 VERIFY로 넘어가던 회귀 버그를 차단하기 위한 전용 경로다.
+     */
+    private fun findAttendanceButtonAndClick(root: AccessibilityNodeInfo): Boolean {
+        for (node in allNodes(root)) {
+            val ancestorClickable = hasClickableAncestor(node, MAX_ACTION_ANCESTOR_DEPTH)
+            val isCandidate = AttendanceMatchRules.isAttendanceActionCandidate(
+                text = node.text,
+                contentDescription = node.contentDescription,
+                viewId = node.viewIdResourceName,
+                selfClickable = node.isClickable,
+                clickableAncestor = ancestorClickable
+            )
+            if (!isCandidate) continue
+
+            AppLog.write(
+                this,
+                "[출석 액션 후보] text='${displayText(node)}' id='${node.viewIdResourceName}' " +
+                    "visible=${node.isVisibleToUser} clickable=${node.isClickable} ancestorClickable=$ancestorClickable"
+            )
+            if (safeGestureClick(node, "출석 액션 정확 매칭='${displayText(node)}'")) return true
+        }
+        return false
+    }
+
+    private fun hasClickableAncestor(node: AccessibilityNodeInfo, maxDepth: Int): Boolean {
+        var current = node.parent
+        var depth = 1
+        while (current != null && depth <= maxDepth) {
+            if (current.isClickable && current.isEnabled) return true
+            current = current.parent
+            depth++
+        }
+        return false
     }
 
     private fun findAndGestureClick(
@@ -546,8 +608,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
     private fun findBestAttendanceTarget(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val metrics = resources.displayMetrics
         val candidates = allNodes(root).filter { node ->
-            val text = searchableText(node)
-            text.isNotEmpty() && ATTEND_KEYWORDS.any { text.contains(normalize(it)) }
+            AttendanceMatchRules.isExactAttendanceAction(node.text, node.contentDescription)
         }
 
         return candidates.minByOrNull { node ->
@@ -758,6 +819,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
         private const val MAX_ATTEND_CLICK = 2
         private const val MIN_NODE_SIZE_PX = 10
         private const val MAX_PARENT_ASCENT = 3
+        private const val MAX_ACTION_ANCESTOR_DEPTH = 2
         private const val MAX_SUBTREE_DEPTH = 3
         private const val MAX_SUBTREE_NODES = 12
         private const val MAX_SUBTREE_TEXT_LENGTH = 80
@@ -771,7 +833,6 @@ class AttendanceAccessibilityService : AccessibilityService() {
 
         private val BENEFIT_TAB_KEYWORDS = listOf("혜택", "이벤트", "benefits")
         private val BANNER_KEYWORDS = listOf("위클리 출석체크", "출석체크", "출석 체크", "매일 출석", "출석 이벤트", "스탬프")
-        private val ATTEND_KEYWORDS = listOf("출석 체크하기", "출석체크하기", "출석 체크", "오늘 출석", "출석하기", "스탬프 찍기", "참여하기", "체크인")
         private val SUCCESS_WORDS = listOf("출석 완료", "오늘 출석 완료", "출석했습니다", "출석 성공", "내일 또", "already checked", "checked in")
 
         private val FORBIDDEN_WORDS = listOf("구매", "결제", "구독", "주문", "카드", "₩")
