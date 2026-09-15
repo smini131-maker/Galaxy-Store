@@ -23,6 +23,9 @@ class AttendanceAccessibilityService : AccessibilityService() {
     private var termsHandled = false
     private var attendanceClickCount = 0
     private var verifyStartedAt = 0L
+    private var scrollStrategyIndex = 0
+    private var lastAttendanceTargetY: Int? = null
+    private var suppressEventRescheduleUntil = 0L
 
     override fun onServiceConnected() {
         instance = this
@@ -42,6 +45,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
         if (event?.packageName?.toString() != AttendanceRunnerService.STORE_PACKAGE) return
         if (!AppPrefs.prefs(this).getBoolean(AppPrefs.KEY_PENDING_RUN, false)) return
         if (runStartedAt == 0L) beginRun()
+        if (System.currentTimeMillis() < suppressEventRescheduleUntil) return
         handler.removeCallbacks(scanRunnable)
         handler.postDelayed(scanRunnable, 350)
     }
@@ -56,7 +60,10 @@ class AttendanceAccessibilityService : AccessibilityService() {
         termsHandled = false
         attendanceClickCount = 0
         verifyStartedAt = 0L
-        AppLog.write(this, "자동 탐색 세션 시작 (WebView 강제 스크롤 v1.2.3)")
+        scrollStrategyIndex = 0
+        lastAttendanceTargetY = null
+        suppressEventRescheduleUntil = 0L
+        AppLog.write(this, "자동 탐색 세션 시작 (GMP 검증형 스크롤 v1.3.0)")
         handler.removeCallbacks(scanRunnable)
         handler.postDelayed(scanRunnable, 800)
     }
@@ -154,10 +161,10 @@ class AttendanceAccessibilityService : AccessibilityService() {
             return scheduleScan(1900)
         }
 
-        if (scrollCount < MAX_SCROLL && scrollForward(root, "출석 페이지")) {
+        if (scrollCount < MAX_SCROLL && scrollAttendancePage(root)) {
             scrollCount++
-            AppLog.write(this, "출석 페이지 스크롤 ${scrollCount}/$MAX_SCROLL")
-            return scheduleScan(2400)
+            AppLog.write(this, "출석 페이지 스크롤 시도 ${scrollCount}/$MAX_SCROLL")
+            return scheduleScan(SCROLL_SETTLE_MS)
         }
 
         finish(false, "출석 이벤트 페이지에서 화면에 보이는 출석 버튼을 찾지 못함")
@@ -446,60 +453,225 @@ class AttendanceAccessibilityService : AccessibilityService() {
     }
 
     private fun scrollForward(root: AccessibilityNodeInfo?, where: String): Boolean {
-        AppLog.write(this, "[$where 스크롤] 강제 스크롤 시도")
+        if (root == null) return false
+        suppressEventRescheduleUntil = System.currentTimeMillis() + EVENT_SUPPRESS_MS
 
-        // 1순위: WebView 자체에 직접 접근성 스크롤 액션을 전달한다.
-        // 일부 Galaxy Store WebView는 isScrollable=false로 노출돼도 액션을 받을 수 있어
-        // isScrollable 조건 없이 보이는 WebView를 모두 확인한다.
-        if (root != null) {
-            val webViews = allNodes(root).filter { node ->
-                val className = node.className?.toString().orEmpty()
-                if (className != "android.webkit.WebView" || !node.isVisibleToUser || !node.isEnabled) {
-                    return@filter false
-                }
-                val rect = Rect().also { node.getBoundsInScreen(it) }
-                !rect.isEmpty && isRectOnScreen(rect)
+        val generic = findActionScrollableNode(root)
+        if (generic != null) {
+            val rect = Rect().also { generic.getBoundsInScreen(it) }
+            val ids = generic.actionList.map { it.id }
+            AppLog.write(
+                this,
+                "[$where 스크롤] 액션 노드 class='${generic.className}' scrollable=${generic.isScrollable} bounds=$rect actions=${actionSummary(generic)}"
+            )
+            if (AccessibilityNodeInfo.ACTION_SCROLL_FORWARD in ids) {
+                val ok = generic.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                AppLog.write(this, "[$where 스크롤] ACTION_SCROLL_FORWARD=$ok")
+                if (ok) return true
             }
-
-            for ((index, webView) in webViews.withIndex()) {
-                val rect = Rect().also { webView.getBoundsInScreen(it) }
-                AppLog.write(
-                    this,
-                    "[$where 스크롤] WebView 후보 ${index + 1}/${webViews.size} bounds=$rect scrollable=${webView.isScrollable}"
-                )
-
-                val forward = webView.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-                AppLog.write(
-                    this,
-                    "[$where 스크롤] WebView ACTION_SCROLL_FORWARD=${if (forward) "success" else "failed"}"
-                )
-                if (forward) return true
-
-                val down = webView.performAction(
-                    AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id
-                )
-                AppLog.write(
-                    this,
-                    "[$where 스크롤] WebView ACTION_SCROLL_DOWN=${if (down) "success" else "failed"}"
-                )
-                if (down) return true
-            }
-
-            if (webViews.isEmpty()) {
-                AppLog.write(this, "[$where 스크롤] 화면 안의 WebView 노드를 찾지 못함")
+            if (AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id in ids) {
+                val ok = generic.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id)
+                AppLog.write(this, "[$where 스크롤] ACTION_SCROLL_DOWN=$ok")
+                if (ok) return true
             }
         }
 
-        // 2순위: S25 Ultra의 상/하단 시스템 제스처 영역을 피한 중앙 안전 구역에서
-        // 짧고 명확한 물리 스와이프를 보낸다.
-        val metrics = resources.displayMetrics
-        val x = metrics.widthPixels / 2f
-        val startY = metrics.heightPixels * SCROLL_START_RATIO
-        val endY = metrics.heightPixels * SCROLL_END_RATIO
+        return dispatchScrollGesture(root, where, 0.50f, 0.78f, 0.28f, 220L)
+    }
 
+    private fun scrollAttendancePage(root: AccessibilityNodeInfo): Boolean {
+        val target = findBestAttendanceTarget(root)
+        val targetRect = target?.let { Rect().also { rect -> it.getBoundsInScreen(rect) } }
+
+        if (target != null && targetRect != null) {
+            val currentY = targetRect.centerY()
+            val previousY = lastAttendanceTargetY
+            if (previousY != null) {
+                val delta = previousY - currentY
+                if (delta >= MIN_SCROLL_DELTA_PX || delta <= -MIN_SCROLL_DELTA_PX) {
+                    AppLog.write(this, "[스크롤 검증] 출석 버튼 Y 이동 감지: $previousY -> $currentY (delta=$delta)")
+                } else {
+                    AppLog.write(this, "[스크롤 검증] 이전 시도 후 출석 버튼 위치 변화 없음: Y=$currentY")
+                }
+            }
+            lastAttendanceTargetY = currentY
+            AppLog.write(
+                this,
+                "[출석 타깃] text='${displayText(target)}' class='${target.className}' id='${target.viewIdResourceName}' visible=${target.isVisibleToUser} bounds=$targetRect actions=${actionSummary(target)}"
+            )
+            logAncestorScrollCapabilities(target)
+        } else {
+            AppLog.write(this, "[출석 타깃] 트리에서 출석 버튼 노드를 찾지 못함")
+        }
+
+        suppressEventRescheduleUntil = System.currentTimeMillis() + EVENT_SUPPRESS_MS
+        val strategy = scrollStrategyIndex % SCROLL_STRATEGY_COUNT
+        scrollStrategyIndex++
+        AppLog.write(this, "[출석 페이지 스크롤] 전략 ${strategy + 1}/$SCROLL_STRATEGY_COUNT 실행")
+
+        return when (strategy) {
+            0 -> {
+                if (target != null) {
+                    val actionId = AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id
+                    val ok = target.performAction(actionId)
+                    AppLog.write(this, "[출석 페이지 스크롤] 타깃 ACTION_SHOW_ON_SCREEN=$ok")
+                    if (ok) true
+                    else tryAncestorScroll(target, root) ||
+                        dispatchScrollGesture(root, "출석 페이지", 0.18f, 0.78f, 0.28f, 220L)
+                } else {
+                    dispatchScrollGesture(root, "출석 페이지", 0.18f, 0.78f, 0.28f, 220L)
+                }
+            }
+
+            1 -> {
+                if (tryAncestorScroll(target, root)) true
+                else dispatchScrollGesture(root, "출석 페이지", 0.50f, 0.78f, 0.28f, 220L)
+            }
+
+            2 -> dispatchScrollGesture(root, "출석 페이지", 0.18f, 0.80f, 0.24f, 200L)
+            3 -> dispatchScrollGesture(root, "출석 페이지", 0.50f, 0.80f, 0.24f, 200L)
+            4 -> dispatchScrollGesture(root, "출석 페이지", 0.82f, 0.80f, 0.24f, 200L)
+            else -> dispatchScrollGesture(root, "출석 페이지", 0.32f, 0.84f, 0.18f, 180L)
+        }
+    }
+
+    private fun findBestAttendanceTarget(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val metrics = resources.displayMetrics
+        val candidates = allNodes(root).filter { node ->
+            val text = searchableText(node)
+            text.isNotEmpty() && ATTEND_KEYWORDS.any { text.contains(normalize(it)) }
+        }
+
+        return candidates.minByOrNull { node ->
+            val rect = Rect().also { node.getBoundsInScreen(it) }
+            when {
+                rect.isEmpty -> Int.MAX_VALUE / 2
+                rect.top >= metrics.heightPixels -> rect.top - metrics.heightPixels
+                rect.bottom <= 0 -> -rect.bottom
+                else -> 0
+            }
+        }
+    }
+
+    private fun tryAncestorScroll(target: AccessibilityNodeInfo?, root: AccessibilityNodeInfo): Boolean {
+        var current: AccessibilityNodeInfo? = target?.parent
+        var depth = 1
+        while (current != null && depth <= MAX_SCROLL_ANCESTOR_DEPTH) {
+            val node = current
+            val actionIds = node.actionList.map { it.id }
+            val rect = Rect().also { node.getBoundsInScreen(it) }
+            val hasScrollAction =
+                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD in actionIds ||
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id in actionIds
+
+            if (hasScrollAction) {
+                AppLog.write(
+                    this,
+                    "[스크롤 조상] depth=$depth class='${node.className}' scrollable=${node.isScrollable} bounds=$rect actions=${actionSummary(node)}"
+                )
+                if (AccessibilityNodeInfo.ACTION_SCROLL_FORWARD in actionIds) {
+                    val ok = node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                    AppLog.write(this, "[스크롤 조상] depth=$depth ACTION_SCROLL_FORWARD=$ok")
+                    if (ok) return true
+                }
+                if (AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id in actionIds) {
+                    val ok = node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id)
+                    AppLog.write(this, "[스크롤 조상] depth=$depth ACTION_SCROLL_DOWN=$ok")
+                    if (ok) return true
+                }
+            }
+            current = node.parent
+            depth++
+        }
+
+        val generic = findActionScrollableNode(root) ?: return false
+        val rect = Rect().also { generic.getBoundsInScreen(it) }
+        val ids = generic.actionList.map { it.id }
         AppLog.write(
             this,
-            "[$where 스크롤] 중앙 제스처 폴백 X=${x.toInt()} Y=${startY.toInt()}→${endY.toInt()} duration=${SCROLL_DURATION_MS}ms"
+            "[스크롤 대체 노드] class='${generic.className}' scrollable=${generic.isScrollable} bounds=$rect actions=${actionSummary(generic)}"
+        )
+        if (AccessibilityNodeInfo.ACTION_SCROLL_FORWARD in ids &&
+            generic.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+        ) {
+            AppLog.write(this, "[스크롤 대체 노드] ACTION_SCROLL_FORWARD=true")
+            return true
+        }
+        if (AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id in ids &&
+            generic.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id)
+        ) {
+            AppLog.write(this, "[스크롤 대체 노드] ACTION_SCROLL_DOWN=true")
+            return true
+        }
+        return false
+    }
+
+    private fun findActionScrollableNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        return allNodes(root).mapNotNull { node ->
+            if (!node.isVisibleToUser || !node.isEnabled) return@mapNotNull null
+            val ids = node.actionList.map { it.id }
+            val hasScroll =
+                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD in ids ||
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id in ids
+            if (!hasScroll) return@mapNotNull null
+            val rect = Rect().also { node.getBoundsInScreen(it) }
+            if (rect.isEmpty || !isRectOnScreen(rect)) return@mapNotNull null
+            node to rect
+        }.maxByOrNull { (_, rect) -> rect.width().toLong() * rect.height().toLong() }?.first
+    }
+
+    private fun logAncestorScrollCapabilities(target: AccessibilityNodeInfo) {
+        var current: AccessibilityNodeInfo? = target
+        var depth = 0
+        while (current != null && depth <= MAX_SCROLL_ANCESTOR_DEPTH) {
+            val node = current
+            val ids = node.actionList.map { it.id }
+            val interesting =
+                depth == 0 || node.isScrollable ||
+                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD in ids ||
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id in ids ||
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id in ids
+            if (interesting) {
+                val rect = Rect().also { node.getBoundsInScreen(it) }
+                AppLog.write(
+                    this,
+                    "[타깃 조상 진단] depth=$depth class='${node.className}' id='${node.viewIdResourceName}' visible=${node.isVisibleToUser} scrollable=${node.isScrollable} bounds=$rect actions=${actionSummary(node)}"
+                )
+            }
+            current = node.parent
+            depth++
+        }
+    }
+
+    private fun actionSummary(node: AccessibilityNodeInfo): String =
+        node.actionList.joinToString(prefix = "[", postfix = "]") { action ->
+            val label = action.label?.toString().orEmpty()
+            if (label.isBlank()) action.id.toString() else "${action.id}:$label"
+        }
+
+    private fun dispatchScrollGesture(
+        root: AccessibilityNodeInfo,
+        where: String,
+        xRatio: Float,
+        startRatio: Float,
+        endRatio: Float,
+        durationMs: Long
+    ): Boolean {
+        val metrics = resources.displayMetrics
+        val rootRect = Rect().also { root.getBoundsInScreen(it) }
+        val left = maxOf(0, rootRect.left)
+        val right = minOf(metrics.widthPixels, rootRect.right).takeIf { it > left } ?: metrics.widthPixels
+        val top = maxOf(0, rootRect.top)
+        val bottom = minOf(metrics.heightPixels, rootRect.bottom).takeIf { it > top } ?: metrics.heightPixels
+        val width = right - left
+        val height = bottom - top
+
+        val x = left + width * xRatio
+        val startY = top + height * startRatio
+        val endY = top + height * endRatio
+        AppLog.write(
+            this,
+            "[$where 스크롤] 물리 스와이프 x=${x.toInt()} y=${startY.toInt()}→${endY.toInt()} duration=${durationMs}ms root=$rootRect"
         )
 
         val path = Path().apply {
@@ -507,14 +679,21 @@ class AttendanceAccessibilityService : AccessibilityService() {
             lineTo(x, endY)
         }
         val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, SCROLL_DURATION_MS))
+            .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
             .build()
 
-        val accepted = dispatchGesture(gesture, null, null)
-        AppLog.write(
-            this,
-            "[$where 스크롤] 중앙 제스처 dispatch=${if (accepted) "accepted" else "rejected"}"
-        )
+        val callback = object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                AppLog.write(this@AttendanceAccessibilityService, "[$where 스크롤] 물리 스와이프 콜백=completed")
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                AppLog.write(this@AttendanceAccessibilityService, "[$where 스크롤] 물리 스와이프 콜백=cancelled")
+            }
+        }
+
+        val accepted = dispatchGesture(gesture, callback, null)
+        AppLog.write(this, "[$where 스크롤] dispatchGesture=${if (accepted) "accepted" else "rejected"}")
         return accepted
     }
 
@@ -567,7 +746,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
 
         private const val RUN_TIMEOUT_MS = 60_000L
         private const val VERIFY_WAIT_MS = 7_000L
-        private const val MAX_SCROLL = 10
+        private const val MAX_SCROLL = 12
         private const val MAX_ATTEND_CLICK = 2
         private const val MIN_NODE_SIZE_PX = 10
         private const val MAX_PARENT_ASCENT = 3
@@ -576,9 +755,11 @@ class AttendanceAccessibilityService : AccessibilityService() {
         private const val MAX_SUBTREE_TEXT_LENGTH = 80
         private const val MAX_SUBTREE_CHILDREN = 8
         private const val MAX_CLICK_HEIGHT_RATIO = 0.38f
-        private const val SCROLL_DURATION_MS = 200L
-        private const val SCROLL_START_RATIO = 0.65f
-        private const val SCROLL_END_RATIO = 0.35f
+        private const val SCROLL_SETTLE_MS = 1_150L
+        private const val EVENT_SUPPRESS_MS = 900L
+        private const val MIN_SCROLL_DELTA_PX = 24
+        private const val MAX_SCROLL_ANCESTOR_DEPTH = 12
+        private const val SCROLL_STRATEGY_COUNT = 6
 
         private val BENEFIT_TAB_KEYWORDS = listOf("혜택", "이벤트", "benefits")
         private val BANNER_KEYWORDS = listOf("위클리 출석체크", "출석체크", "출석 체크", "매일 출석", "출석 이벤트", "스탬프")
