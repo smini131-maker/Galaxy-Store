@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Galaxy Store 자동 출석"
+            android:textSize="28sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="매일 지정 시간에 Galaxy Store를 열고 출석체크 UI를 찾아 자동으로 누릅니다. 잠금 화면에서는 동작을 미루며, 접근성 권한이 필요합니다."
+            android:textSize="15sp" />
+
+        <TextView android:id="@+id/statusText" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:textSize="16sp" android:textStyle="bold" />
+
+        <Button android:id="@+id/accessibilityButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="1. 접근성 서비스 설정 열기" />
+        <Button android:id="@+id/exactAlarmButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="2. 정확한 알람 권한 설정" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="실행 시간" android:textStyle="bold" android:textSize="17sp" />
+        <TimePicker android:id="@+id/timePicker" android:layout_width="match_parent" android:layout_height="wrap_content" android:timePickerMode="spinner" />
+
+        <Switch android:id="@+id/enabledSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="매일 자동 출석 사용" android:textSize="16sp" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp" android:text="좌표 클릭은 Galaxy Store UI가 크게 바뀐 경우를 위한 마지막 수단입니다. 기본값은 사용 안 함입니다." />
+        <Switch android:id="@+id/coordinateSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="최후 수단 좌표 클릭 허용" />
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+            <EditText android:id="@+id/xInput" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:hint="X" android:inputType="number" />
+            <EditText android:id="@+id/yInput" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:hint="Y" android:inputType="number" />
+        </LinearLayout>
+
+        <Button android:id="@+id/saveButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="설정 저장 / 알람 예약" />
+        <Button android:id="@+id/testButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="지금 1회 테스트 실행" />
+        <Button android:id="@+id/openStoreButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Galaxy Store만 열기" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="최근 로그" android:textStyle="bold" android:textSize="17sp" />
+        <TextView android:id="@+id/logText" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:background="#EEEEEE" android:padding="12dp" android:textIsSelectable="true" android:typeface="monospace" />
+    </LinearLayout>
+</ScrollView>
