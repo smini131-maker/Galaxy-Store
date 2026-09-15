@@ -1,0 +1,29 @@
+name: Upgrade Galaxy Store automation to v1.3.1
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/upgrade-v131.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply v1.3.1 patch
+        run: python3 tools/upgrade_v131.py
+
+      - name: Commit v1.3.1 app changes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/smini/galaxyattendance/AttendanceAccessibilityService.kt app/build.gradle.kts README.md
+          git commit -m "fix: v1.3.1 physical-only event scroll"
+          git push
