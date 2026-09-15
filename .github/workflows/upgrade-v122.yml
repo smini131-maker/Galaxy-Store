@@ -130,19 +130,13 @@ jobs:
           if '## v1.2.2 WebView 스크롤 보강' not in r:
               r += '''\n\n## v1.2.2 WebView 스크롤 보강\n- `isScrollable=true`인 WebView/ScrollView를 찾아 `ACTION_SCROLL_FORWARD`를 1순위로 수행합니다.\n- 필요 시 `ACTION_SCROLL_DOWN`도 시도합니다.\n- 네이티브 스크롤 실패 시 화면 높이 70% → 30%를 250ms로 스와이프합니다.\n- 하단 내비게이션/삼성페이 영역과의 충돌 및 WebView 롱프레스 오인을 줄였습니다.\n- 내부 로그에 스크롤 후보 클래스/Bounds, 네이티브 액션 성공 여부, 제스처 폴백 결과를 남깁니다.\n'''
           readme.write_text(r)
-
-          workflow = Path('.github/workflows/build.yml')
-          w = workflow.read_text().replace('v1.2.1-debug', 'v1.2.2-debug').replace('v1.2.1-project', 'v1.2.2-project')
-          workflow.write_text(w)
           PY
 
-          rm -f .github/workflows/upgrade-v122.yml
-
-      - name: Commit v1.2.2
+      - name: Commit v1.2.2 app changes
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app/src/main/java/com/smini/galaxyattendance/AttendanceAccessibilityService.kt app/build.gradle.kts README.md .github/workflows/build.yml .github/workflows/upgrade-v122.yml
+          git add app/src/main/java/com/smini/galaxyattendance/AttendanceAccessibilityService.kt app/build.gradle.kts README.md
           git commit -m "feat: v1.2.2 native WebView scroll fallback"
           git push
