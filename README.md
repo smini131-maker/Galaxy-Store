@@ -3,7 +3,7 @@
 Galaxy Store의 출석체크 화면을 매일 지정 시간에 열고 Android AccessibilityService로 UI 요소를 찾아 클릭하는 로컬 자동화 앱입니다.
 
 ## 현재 버전
-**v1.2.1** — WebView 출석 버튼 탐색과 Bounds/스크롤 진단을 강화한 버전입니다.
+**v1.2.2** — WebView 네이티브 스크롤 우선 + 안전 구역 제스처 폴백 버전입니다.
 
 ## 핵심 설계
 - 대상: Samsung Galaxy S25 Ultra / Android 16 우선
@@ -53,3 +53,11 @@ Galaxy Store는 업데이트로 UI 텍스트/viewId/화면 구조가 바뀔 수 
 - 분할된 `출석` + `체크하기` 형제 노드 결합 매칭 유지
 - 전체 WebView 같은 지나치게 큰 부모를 클릭 대상으로 승격하지 않아 허공/중앙 오클릭 방지
 - 출석 버튼 터치 후 성공 문구를 실제로 확인해야 성공 처리
+
+
+## v1.2.2 WebView 스크롤 보강
+- `isScrollable=true`인 WebView/ScrollView를 찾아 `ACTION_SCROLL_FORWARD`를 1순위로 수행합니다.
+- 필요 시 `ACTION_SCROLL_DOWN`도 시도합니다.
+- 네이티브 스크롤 실패 시 화면 높이 70% → 30%를 250ms로 스와이프합니다.
+- 하단 내비게이션/삼성페이 영역과의 충돌 및 WebView 롱프레스 오인을 줄였습니다.
+- 내부 로그에 스크롤 후보 클래스/Bounds, 네이티브 액션 성공 여부, 제스처 폴백 결과를 남깁니다.

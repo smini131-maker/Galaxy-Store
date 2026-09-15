@@ -56,7 +56,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
         termsHandled = false
         attendanceClickCount = 0
         verifyStartedAt = 0L
-        AppLog.write(this, "자동 탐색 세션 시작 (WebView 정밀진단 v1.2.1)")
+        AppLog.write(this, "자동 탐색 세션 시작 (WebView 스크롤 보강 v1.2.2)")
         handler.removeCallbacks(scanRunnable)
         handler.postDelayed(scanRunnable, 800)
     }
@@ -126,7 +126,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
             return scheduleScan(5000)
         }
 
-        if (scrollCount < MAX_SCROLL && scrollForward("혜택 화면")) {
+        if (scrollCount < MAX_SCROLL && scrollForward(root, "혜택 화면")) {
             scrollCount++
             AppLog.write(this, "혜택 화면 스크롤 ${scrollCount}/$MAX_SCROLL")
             return scheduleScan(1700)
@@ -154,7 +154,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
             return scheduleScan(1900)
         }
 
-        if (scrollCount < MAX_SCROLL && scrollForward("출석 페이지")) {
+        if (scrollCount < MAX_SCROLL && scrollForward(root, "출석 페이지")) {
             scrollCount++
             AppLog.write(this, "출석 페이지 스크롤 ${scrollCount}/$MAX_SCROLL")
             return scheduleScan(2400)
@@ -445,30 +445,83 @@ class AttendanceAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun scrollForward(where: String): Boolean {
-        val metrics = resources.displayMetrics
-        val x = metrics.widthPixels / 2f
-        val startY = metrics.heightPixels * 0.85f
-        val endY = metrics.heightPixels * 0.15f
+    private fun scrollForward(root: AccessibilityNodeInfo?, where: String): Boolean {
+    AppLog.write(this, "[$where 스크롤] 스크롤 시도")
 
+    val scrollableNode = root?.let { findScrollableNode(it) }
+    if (scrollableNode != null) {
+        val rect = Rect().also { scrollableNode.getBoundsInScreen(it) }
+        val className = scrollableNode.className?.toString().orEmpty()
         AppLog.write(
             this,
-            "[$where 스크롤] 제스처 실행 X=${x.toInt()} Y=${startY.toInt()}→${endY.toInt()} duration=${SCROLL_DURATION_MS}ms"
+            "[$where 스크롤] 네이티브 후보 class='$className' bounds=$rect visible=${scrollableNode.isVisibleToUser}"
         )
 
-        val path = Path().apply {
-            moveTo(x, startY)
-            lineTo(x, endY)
-        }
+        val forward = scrollableNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+        AppLog.write(this, "[$where 스크롤] ACTION_SCROLL_FORWARD=${if (forward) "success" else "failed"}")
+        if (forward) return true
 
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, SCROLL_DURATION_MS))
-            .build()
-
-        val accepted = dispatchGesture(gesture, null, null)
-        AppLog.write(this, "[$where 스크롤] dispatchGesture=${if (accepted) "accepted" else "rejected"}")
-        return accepted
+        val down = scrollableNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id)
+        AppLog.write(this, "[$where 스크롤] ACTION_SCROLL_DOWN=${if (down) "success" else "failed"}")
+        if (down) return true
+    } else {
+        AppLog.write(this, "[$where 스크롤] isScrollable=true 노드를 찾지 못함")
     }
+
+    val metrics = resources.displayMetrics
+    val x = metrics.widthPixels / 2f
+    val startY = metrics.heightPixels * SCROLL_START_RATIO
+    val endY = metrics.heightPixels * SCROLL_END_RATIO
+
+    AppLog.write(
+        this,
+        "[$where 스크롤] 제스처 폴백 X=${x.toInt()} Y=${startY.toInt()}→${endY.toInt()} duration=${SCROLL_DURATION_MS}ms"
+    )
+
+    val path = Path().apply {
+        moveTo(x, startY)
+        lineTo(x, endY)
+    }
+
+    val gesture = GestureDescription.Builder()
+        .addStroke(GestureDescription.StrokeDescription(path, 0, SCROLL_DURATION_MS))
+        .build()
+
+    val accepted = dispatchGesture(gesture, null, null)
+    AppLog.write(this, "[$where 스크롤] 제스처 dispatch=${if (accepted) "accepted" else "rejected"}")
+    return accepted
+}
+
+private fun findScrollableNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+    val candidates = allNodes(root).mapNotNull { node ->
+        if (!node.isScrollable || !node.isVisibleToUser || !node.isEnabled) return@mapNotNull null
+        val rect = Rect().also { node.getBoundsInScreen(it) }
+        if (rect.isEmpty || !isRectOnScreen(rect)) return@mapNotNull null
+        ScrollCandidate(node, rect)
+    }
+
+    if (candidates.isEmpty()) return null
+
+    return candidates.maxWithOrNull(
+        compareBy<ScrollCandidate> { scrollClassPriority(it.node.className?.toString().orEmpty()) }
+            .thenBy { it.rect.height() }
+    )?.node
+}
+
+private fun scrollClassPriority(className: String): Int {
+    val name = className.lowercase(Locale.ROOT)
+    return when {
+        "webview" in name -> 4
+        "scrollview" in name -> 3
+        "recyclerview" in name || "listview" in name -> 2
+        else -> 1
+    }
+}
+
+private data class ScrollCandidate(
+    val node: AccessibilityNodeInfo,
+    val rect: Rect
+)
 
     private fun gestureClick(x: Float, y: Float, why: String): Boolean {
         val path = Path().apply { moveTo(x, y) }
@@ -528,7 +581,9 @@ class AttendanceAccessibilityService : AccessibilityService() {
         private const val MAX_SUBTREE_TEXT_LENGTH = 80
         private const val MAX_SUBTREE_CHILDREN = 8
         private const val MAX_CLICK_HEIGHT_RATIO = 0.38f
-        private const val SCROLL_DURATION_MS = 600L
+        private const val SCROLL_DURATION_MS = 250L
+        private const val SCROLL_START_RATIO = 0.70f
+        private const val SCROLL_END_RATIO = 0.30f
 
         private val BENEFIT_TAB_KEYWORDS = listOf("혜택", "이벤트", "benefits")
         private val BANNER_KEYWORDS = listOf("위클리 출석체크", "출석체크", "출석 체크", "매일 출석", "출석 이벤트", "스탬프")
