@@ -63,7 +63,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
         scrollStrategyIndex = 0
         lastAttendanceTargetY = null
         suppressEventRescheduleUntil = 0L
-        AppLog.write(this, "자동 탐색 세션 시작 (GMP 검증형 스크롤 v1.3.0)")
+        AppLog.write(this, "자동 탐색 세션 시작 (물리 스와이프 전용 v1.3.1)")
         handler.removeCallbacks(scanRunnable)
         handler.postDelayed(scanRunnable, 800)
     }
@@ -488,52 +488,60 @@ class AttendanceAccessibilityService : AccessibilityService() {
             val previousY = lastAttendanceTargetY
             if (previousY != null) {
                 val delta = previousY - currentY
-                if (delta >= MIN_SCROLL_DELTA_PX || delta <= -MIN_SCROLL_DELTA_PX) {
-                    AppLog.write(this, "[스크롤 검증] 출석 버튼 Y 이동 감지: $previousY -> $currentY (delta=$delta)")
+                if (kotlin.math.abs(delta) >= MIN_SCROLL_DELTA_PX) {
+                    AppLog.write(this, "[스크롤 검증] 실제 이동 확인: 출석 버튼 Y $previousY -> $currentY (delta=$delta)")
                 } else {
-                    AppLog.write(this, "[스크롤 검증] 이전 시도 후 출석 버튼 위치 변화 없음: Y=$currentY")
+                    AppLog.write(this, "[스크롤 검증] 실제 이동 없음: 출석 버튼 Y=$currentY (이전=$previousY)")
                 }
             }
             lastAttendanceTargetY = currentY
             AppLog.write(
                 this,
-                "[출석 타깃] text='${displayText(target)}' class='${target.className}' id='${target.viewIdResourceName}' visible=${target.isVisibleToUser} bounds=$targetRect actions=${actionSummary(target)}"
+                "[출석 타깃] text='${displayText(target)}' class='${target.className}' id='${target.viewIdResourceName}' visible=${target.isVisibleToUser} bounds=$targetRect"
             )
-            logAncestorScrollCapabilities(target)
         } else {
-            AppLog.write(this, "[출석 타깃] 트리에서 출석 버튼 노드를 찾지 못함")
+            AppLog.write(this, "[출석 타깃] 출석 버튼 노드를 찾지 못함")
         }
 
+        // Galaxy Store 이벤트 페이지는 native ACTION_SCROLL_* 가 true를 반환해도
+        // 실제 화면이 움직이지 않는 경우가 있다. CHECKIN 단계에서는 반환값을 절대 신뢰하지 않고
+        // 수동 스크롤과 동일한 물리 터치 제스처만 사용한다.
         suppressEventRescheduleUntil = System.currentTimeMillis() + EVENT_SUPPRESS_MS
-        val strategy = scrollStrategyIndex % SCROLL_STRATEGY_COUNT
+
+        val strategy = scrollStrategyIndex % PHYSICAL_SCROLL_STRATEGY_COUNT
         scrollStrategyIndex++
-        AppLog.write(this, "[출석 페이지 스크롤] 전략 ${strategy + 1}/$SCROLL_STRATEGY_COUNT 실행")
 
-        return when (strategy) {
-            0 -> {
-                if (target != null) {
-                    val actionId = AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id
-                    val ok = target.performAction(actionId)
-                    AppLog.write(this, "[출석 페이지 스크롤] 타깃 ACTION_SHOW_ON_SCREEN=$ok")
-                    if (ok) true
-                    else tryAncestorScroll(target, root) ||
-                        dispatchScrollGesture(root, "출석 페이지", 0.18f, 0.78f, 0.28f, 220L)
-                } else {
-                    dispatchScrollGesture(root, "출석 페이지", 0.18f, 0.78f, 0.28f, 220L)
-                }
-            }
-
-            1 -> {
-                if (tryAncestorScroll(target, root)) true
-                else dispatchScrollGesture(root, "출석 페이지", 0.50f, 0.78f, 0.28f, 220L)
-            }
-
-            2 -> dispatchScrollGesture(root, "출석 페이지", 0.18f, 0.80f, 0.24f, 200L)
-            3 -> dispatchScrollGesture(root, "출석 페이지", 0.50f, 0.80f, 0.24f, 200L)
-            4 -> dispatchScrollGesture(root, "출석 페이지", 0.82f, 0.80f, 0.24f, 200L)
-            else -> dispatchScrollGesture(root, "출석 페이지", 0.32f, 0.84f, 0.18f, 180L)
+        val spec = when (strategy) {
+            0 -> PhysicalScrollSpec(0.50f, 0.60f, 0.30f, 150L)
+            1 -> PhysicalScrollSpec(0.25f, 0.64f, 0.28f, 160L)
+            2 -> PhysicalScrollSpec(0.75f, 0.64f, 0.28f, 160L)
+            3 -> PhysicalScrollSpec(0.50f, 0.72f, 0.24f, 170L)
+            4 -> PhysicalScrollSpec(0.32f, 0.68f, 0.22f, 150L)
+            else -> PhysicalScrollSpec(0.68f, 0.68f, 0.22f, 150L)
         }
+
+        AppLog.write(
+            this,
+            "[출석 페이지 스크롤] 물리 전용 전략 ${strategy + 1}/$PHYSICAL_SCROLL_STRATEGY_COUNT " +
+                "x=${(spec.xRatio * 100).toInt()}% y=${(spec.startRatio * 100).toInt()}→${(spec.endRatio * 100).toInt()}% ${spec.durationMs}ms"
+        )
+
+        return dispatchScrollGesture(
+            root = root,
+            where = "출석 페이지",
+            xRatio = spec.xRatio,
+            startRatio = spec.startRatio,
+            endRatio = spec.endRatio,
+            durationMs = spec.durationMs
+        )
     }
+
+    private data class PhysicalScrollSpec(
+        val xRatio: Float,
+        val startRatio: Float,
+        val endRatio: Float,
+        val durationMs: Long
+    )
 
     private fun findBestAttendanceTarget(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val metrics = resources.displayMetrics
@@ -755,11 +763,11 @@ class AttendanceAccessibilityService : AccessibilityService() {
         private const val MAX_SUBTREE_TEXT_LENGTH = 80
         private const val MAX_SUBTREE_CHILDREN = 8
         private const val MAX_CLICK_HEIGHT_RATIO = 0.38f
-        private const val SCROLL_SETTLE_MS = 1_150L
-        private const val EVENT_SUPPRESS_MS = 900L
+        private const val SCROLL_SETTLE_MS = 900L
+        private const val EVENT_SUPPRESS_MS = 750L
         private const val MIN_SCROLL_DELTA_PX = 24
         private const val MAX_SCROLL_ANCESTOR_DEPTH = 12
-        private const val SCROLL_STRATEGY_COUNT = 6
+        private const val PHYSICAL_SCROLL_STRATEGY_COUNT = 6
 
         private val BENEFIT_TAB_KEYWORDS = listOf("혜택", "이벤트", "benefits")
         private val BANNER_KEYWORDS = listOf("위클리 출석체크", "출석체크", "출석 체크", "매일 출석", "출석 이벤트", "스탬프")

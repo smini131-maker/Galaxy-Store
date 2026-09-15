@@ -3,7 +3,7 @@
 Galaxy Store의 출석체크 화면을 매일 지정 시간에 열고 Android AccessibilityService로 UI 요소를 찾아 클릭하는 로컬 자동화 앱입니다.
 
 ## 현재 버전
-**v1.3.0** — Galaxy Store GMP 가상 접근성 트리를 대상으로 실제 스크롤 이동을 검증하는 다단계 스크롤 엔진 버전입니다.
+**v1.3.1** — 출석 이벤트 페이지에서 네이티브 스크롤 반환값을 완전히 무시하고 물리 스와이프만 사용하는 검증형 버전입니다.
 
 ## 핵심 설계
 - 대상: Samsung Galaxy S25 Ultra / Android 16 우선
@@ -81,3 +81,14 @@ Galaxy Store는 업데이트로 UI 텍스트/viewId/화면 구조가 바뀔 수 
 - 제스처는 `GestureResultCallback`으로 completed/cancelled 여부까지 기록합니다.
 - 스크롤 직후 접근성 이벤트 폭주가 예약된 검증 스캔을 앞당기지 않도록 900ms 동안 이벤트 재예약을 억제합니다.
 - 클릭/금지 단어/Bounds/성공 문구 검증 로직은 기존 그대로 유지합니다.
+
+
+## v1.3.1 물리 스와이프 전용
+- 실제 로그에서 `출석체크하기`가 `visible=false`, `Rect(0,3064-1441,3064)`의 높이 0 노드로 확인되었습니다.
+- 사용자가 수동으로 스크롤하면 이후 클릭이 성공하므로 클릭 로직은 유지하고 CHECKIN 스크롤 경로만 교체했습니다.
+- 출석 페이지에서는 `ACTION_SCROLL_FORWARD`, `ACTION_SCROLL_DOWN`, `ACTION_SHOW_ON_SCREEN`의 반환값을 제어 판단에 사용하지 않습니다.
+- 첫 시도부터 `dispatchGesture` 물리 스와이프를 강제합니다. 기본 전략은 화면 중앙 X=50%, Y=60%→30%, 150ms입니다.
+- 첫 스와이프가 실제 이동을 만들지 못하면 X=25%/75% 및 더 긴 스와이프 범위로 자동 변경합니다.
+- 다음 스캔에서 숨겨진 출석 버튼 Y 좌표의 실제 변화량을 비교하여 화면이 움직였는지 검증합니다.
+- 제스처 콜백 completed/cancelled와 dispatch accepted/rejected를 AppLog에 남깁니다.
+- 접근성 이벤트가 제스처 직후 검증 타이밍을 깨뜨리지 않도록 750ms 동안 재예약을 억제합니다.
