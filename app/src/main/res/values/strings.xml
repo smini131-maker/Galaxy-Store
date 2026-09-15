@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Galaxy 출석 자동화</string>
+    <string name="accessibility_description">Galaxy Store 화면에서 출석체크 관련 UI를 찾아 사용자가 설정한 시간에 자동으로 누릅니다.</string>
+</resources>
