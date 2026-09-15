@@ -222,8 +222,6 @@ class AttendanceAccessibilityService : AccessibilityService() {
             }
         }
 
-        // WebView는 눈에 보이는 한 문장을 여러 노드/text/contentDescription으로 나눌 수 있다.
-        // 공백을 제거한 text + contentDescription 결합값으로 모든 후보를 검사한다.
         for (needle in needles) {
             val target = normalize(needle)
             for (node in nodes) {
@@ -244,6 +242,16 @@ class AttendanceAccessibilityService : AccessibilityService() {
             }
         }
 
+        for (needle in needles) {
+            val target = normalize(needle)
+            for (node in nodes) {
+                val subtree = compactSubtreeText(node) ?: continue
+                if (subtree.contains(target)) {
+                    if (safeGestureClick(node, "분할 텍스트 결합 매칭=$subtree")) return true
+                }
+            }
+        }
+
         return false
     }
 
@@ -257,42 +265,67 @@ class AttendanceAccessibilityService : AccessibilityService() {
             return false
         }
 
-        // WebView의 텍스트 노드는 0x0 또는 매우 작은 bounds를 가질 수 있으므로
-        // 최대 3단계 부모까지 올라가 실제 버튼 컨테이너 영역을 찾는다.
-        var target: AccessibilityNodeInfo? = node
-        repeat(MAX_PARENT_ASCENT + 1) {
-            val candidate = target ?: return@repeat
-            if (isSafeVisibleNode(candidate)) {
+        if (!node.isVisibleToUser || !node.isEnabled) {
+            return false
+        }
+
+        val originalRect = Rect().also { node.getBoundsInScreen(it) }
+
+        if (!originalRect.isEmpty &&
+            originalRect.width() >= MIN_NODE_SIZE_PX &&
+            originalRect.height() >= MIN_NODE_SIZE_PX
+        ) {
+            if (!isRectOnScreen(originalRect)) {
+                AppLog.write(this, "WebView 화면 밖 후보 무시: '$nodeText' bounds=$originalRect")
+                return false
+            }
+            return gestureClick(
+                originalRect.centerX().toFloat(),
+                originalRect.centerY().toFloat(),
+                "$why bounds=$originalRect parentDepth=0"
+            )
+        }
+
+        var target: AccessibilityNodeInfo? = node.parent
+        for (depth in 1..MAX_PARENT_ASCENT) {
+            val candidate = target ?: break
+            if (candidate.isVisibleToUser && candidate.isEnabled) {
                 val rect = Rect().also { candidate.getBoundsInScreen(it) }
-                return gestureClick(
-                    rect.centerX().toFloat(),
-                    rect.centerY().toFloat(),
-                    "$why bounds=$rect parentDepth=$it"
-                )
+                if (!rect.isEmpty &&
+                    rect.width() >= MIN_NODE_SIZE_PX &&
+                    rect.height() >= MIN_NODE_SIZE_PX &&
+                    isRectOnScreen(rect)
+                ) {
+                    return gestureClick(
+                        rect.centerX().toFloat(),
+                        rect.centerY().toFloat(),
+                        "$why bounds=$rect parentDepth=$depth"
+                    )
+                }
             }
             target = candidate.parent
         }
 
-        val rect = Rect().also { node.getBoundsInScreen(it) }
-        AppLog.write(this, "후보 무시: 화면 밖/숨김/너무 작음 '$nodeText' bounds=$rect")
+        AppLog.write(this, "후보 무시: 표시 영역을 확보하지 못함 '$nodeText' bounds=$originalRect")
         return false
     }
 
     private fun isSafeVisibleNode(node: AccessibilityNodeInfo): Boolean {
         if (!node.isVisibleToUser || !node.isEnabled) return false
-
         val rect = Rect().also { node.getBoundsInScreen(it) }
-        if (rect.isEmpty || rect.width() < MIN_NODE_SIZE_PX || rect.height() < MIN_NODE_SIZE_PX) return false
+        return !rect.isEmpty &&
+            rect.width() >= MIN_NODE_SIZE_PX &&
+            rect.height() >= MIN_NODE_SIZE_PX &&
+            isRectOnScreen(rect)
+    }
 
+    private fun isRectOnScreen(rect: Rect): Boolean {
         val metrics = resources.displayMetrics
         val screen = Rect(0, 0, metrics.widthPixels, metrics.heightPixels)
         if (!Rect.intersects(screen, rect)) return false
-
         val cx = rect.centerX()
         val cy = rect.centerY()
-        if (cx !in 0 until metrics.widthPixels || cy !in 0 until metrics.heightPixels) return false
-
-        return true
+        return cx in 0 until metrics.widthPixels && cy in 0 until metrics.heightPixels
     }
 
     private fun containsForbiddenWord(text: String): Boolean {
@@ -330,6 +363,25 @@ class AttendanceAccessibilityService : AccessibilityService() {
 
     private fun searchableText(node: AccessibilityNodeInfo): String =
         normalize(node.text) + normalize(node.contentDescription)
+
+    private fun compactSubtreeText(root: AccessibilityNodeInfo): String? {
+        if (!root.isVisibleToUser) return null
+        val parts = ArrayList<String>(MAX_SUBTREE_NODES)
+        var visited = 0
+
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || depth > MAX_SUBTREE_DEPTH || visited >= MAX_SUBTREE_NODES) return
+            visited++
+            val own = searchableText(node)
+            if (own.isNotEmpty()) parts.add(own)
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+
+        walk(root, 0)
+        if (visited > MAX_SUBTREE_NODES || parts.isEmpty()) return null
+        val combined = parts.joinToString("")
+        return combined.takeIf { it.length <= MAX_SUBTREE_TEXT_LENGTH }
+    }
 
     private fun dumpCompact(root: AccessibilityNodeInfo) {
         if (System.currentTimeMillis() - lastDumpAt < 2500) return
@@ -420,6 +472,9 @@ class AttendanceAccessibilityService : AccessibilityService() {
         private const val MAX_ATTEND_CLICK = 2
         private const val MIN_NODE_SIZE_PX = 10
         private const val MAX_PARENT_ASCENT = 3
+        private const val MAX_SUBTREE_DEPTH = 3
+        private const val MAX_SUBTREE_NODES = 12
+        private const val MAX_SUBTREE_TEXT_LENGTH = 80
 
         private val BENEFIT_TAB_KEYWORDS = listOf("혜택", "이벤트", "benefits")
         private val BANNER_KEYWORDS = listOf("위클리 출석체크", "출석체크", "출석 체크", "매일 출석", "출석 이벤트", "스탬프")
