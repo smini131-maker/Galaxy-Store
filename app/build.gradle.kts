@@ -11,8 +11,8 @@ android {
         applicationId = "com.smini.galaxyattendance"
         minSdk = 31
         targetSdk = 36
-        versionCode = 8
-        versionName = "1.3.1"
+        versionCode = 9
+        versionName = "1.4.0"
     }
 
     buildTypes {
@@ -26,4 +26,8 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+}
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
 }
