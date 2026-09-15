@@ -56,7 +56,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
         termsHandled = false
         attendanceClickCount = 0
         verifyStartedAt = 0L
-        AppLog.write(this, "자동 탐색 세션 시작 (WebView 강화 v1.2.0)")
+        AppLog.write(this, "자동 탐색 세션 시작 (WebView 정밀진단 v1.2.1)")
         handler.removeCallbacks(scanRunnable)
         handler.postDelayed(scanRunnable, 800)
     }
@@ -101,19 +101,19 @@ class AttendanceAccessibilityService : AccessibilityService() {
             attendanceClickCount++
             stage = Stage.VERIFY
             verifyStartedAt = System.currentTimeMillis()
-            return scheduleScan(1700)
+            return scheduleScan(1800)
         }
 
         if (findAndGestureClick(root, BANNER_KEYWORDS, includeViewId = true)) {
             stage = Stage.CHECKIN
             scrollCount = 0
-            return scheduleScan(3000)
+            return scheduleScan(5000)
         }
 
         if (findAndGestureClick(root, BENEFIT_TAB_KEYWORDS, includeViewId = false)) {
             stage = Stage.BANNER
             scrollCount = 0
-            return scheduleScan(2200)
+            return scheduleScan(2400)
         }
 
         retry("출석 진입 UI 탐색 중")
@@ -123,15 +123,13 @@ class AttendanceAccessibilityService : AccessibilityService() {
         if (findAndGestureClick(root, BANNER_KEYWORDS, includeViewId = true)) {
             stage = Stage.CHECKIN
             scrollCount = 0
-            return scheduleScan(3200)
+            return scheduleScan(5000)
         }
 
-        if (scrollCount < MAX_SCROLL) {
-            if (scrollForward()) {
-                scrollCount++
-                AppLog.write(this, "혜택 화면 스크롤 ${scrollCount}/$MAX_SCROLL")
-                return scheduleScan(1400)
-            }
+        if (scrollCount < MAX_SCROLL && scrollForward("혜택 화면")) {
+            scrollCount++
+            AppLog.write(this, "혜택 화면 스크롤 ${scrollCount}/$MAX_SCROLL")
+            return scheduleScan(1700)
         }
 
         finish(false, "혜택 화면에서 화면에 보이는 출석 배너를 찾지 못함")
@@ -146,22 +144,20 @@ class AttendanceAccessibilityService : AccessibilityService() {
         if (!termsHandled && isMonday()) {
             handleMondayTerms(root)
             termsHandled = true
-            return scheduleScan(1200)
+            return scheduleScan(1300)
         }
 
         if (findAndGestureClick(root, ATTEND_KEYWORDS, includeViewId = true)) {
             attendanceClickCount++
             stage = Stage.VERIFY
             verifyStartedAt = System.currentTimeMillis()
-            return scheduleScan(1800)
+            return scheduleScan(1900)
         }
 
-        if (scrollCount < MAX_SCROLL) {
-            if (scrollForward()) {
-                scrollCount++
-                AppLog.write(this, "출석 페이지 스크롤 ${scrollCount}/$MAX_SCROLL")
-                return scheduleScan(1400)
-            }
+        if (scrollCount < MAX_SCROLL && scrollForward("출석 페이지")) {
+            scrollCount++
+            AppLog.write(this, "출석 페이지 스크롤 ${scrollCount}/$MAX_SCROLL")
+            return scheduleScan(2400)
         }
 
         finish(false, "출석 이벤트 페이지에서 화면에 보이는 출석 버튼을 찾지 못함")
@@ -183,7 +179,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
             attendanceClickCount++
             verifyStartedAt = System.currentTimeMillis()
             AppLog.write(this, "출석 버튼 재시도 ${attendanceClickCount}/$MAX_ATTEND_CLICK")
-            return scheduleScan(1800)
+            return scheduleScan(1900)
         }
 
         finish(false, "출석 버튼 터치는 수행했지만 완료 문구를 확인하지 못함")
@@ -196,9 +192,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
 
         var clickedAny = false
         for (box in checkBoxes) {
-            if (safeGestureClick(box, "월요일 약관 체크박스")) {
-                clickedAny = true
-            }
+            if (safeGestureClick(box, "월요일 약관 체크박스")) clickedAny = true
         }
 
         if (!clickedAny) {
@@ -227,7 +221,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
             for (node in nodes) {
                 val combined = searchableText(node)
                 if (combined.isNotEmpty() && combined == target) {
-                    if (safeGestureClick(node, "정확 매칭=${node.text ?: node.contentDescription}")) return true
+                    if (safeGestureClick(node, "정확 매칭='${displayText(node)}'")) return true
                 }
             }
         }
@@ -237,17 +231,20 @@ class AttendanceAccessibilityService : AccessibilityService() {
             for (node in nodes) {
                 val combined = searchableText(node)
                 if (combined.isNotEmpty() && combined.contains(target)) {
-                    if (safeGestureClick(node, "공백무시 부분 매칭=${node.text ?: node.contentDescription}")) return true
+                    if (safeGestureClick(node, "공백무시 부분 매칭='${displayText(node)}'")) return true
                 }
             }
         }
 
+        // WebView가 "출석" / "체크하기"처럼 문장을 형제 노드로 분리한 경우,
+        // 너무 큰 WebView 전체가 아닌 작은 컨테이너의 하위 텍스트만 합쳐서 찾는다.
         for (needle in needles) {
             val target = normalize(needle)
             for (node in nodes) {
+                if (!isReasonableSubtreeCandidate(node)) continue
                 val subtree = compactSubtreeText(node) ?: continue
                 if (subtree.contains(target)) {
-                    if (safeGestureClick(node, "분할 텍스트 결합 매칭=$subtree")) return true
+                    if (safeGestureClick(node, "분할 텍스트 결합 매칭='$subtree'")) return true
                 }
             }
         }
@@ -256,27 +253,37 @@ class AttendanceAccessibilityService : AccessibilityService() {
     }
 
     private fun safeGestureClick(node: AccessibilityNodeInfo, why: String): Boolean {
-        val nodeText = listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
-            .joinToString(" ")
-            .trim()
+        val nodeText = displayText(node)
+        val originalRect = Rect().also { node.getBoundsInScreen(it) }
+        AppLog.write(
+            this,
+            "[후보 발견] $why text='$nodeText' visible=${node.isVisibleToUser} enabled=${node.isEnabled} bounds=$originalRect"
+        )
 
         if (containsForbiddenWord(nodeText)) {
-            AppLog.write(this, "안전 차단: 금지 단어 포함 '$nodeText'")
+            AppLog.write(this, "[후보 무시] 금지 단어 포함 text='$nodeText'")
             return false
         }
 
-        if (!node.isVisibleToUser || !node.isEnabled) {
+        if (!node.isVisibleToUser) {
+            AppLog.write(this, "[후보 무시] isVisibleToUser=false text='$nodeText' bounds=$originalRect")
             return false
         }
-
-        val originalRect = Rect().also { node.getBoundsInScreen(it) }
+        if (!node.isEnabled) {
+            AppLog.write(this, "[후보 무시] enabled=false text='$nodeText' bounds=$originalRect")
+            return false
+        }
 
         if (!originalRect.isEmpty &&
             originalRect.width() >= MIN_NODE_SIZE_PX &&
             originalRect.height() >= MIN_NODE_SIZE_PX
         ) {
             if (!isRectOnScreen(originalRect)) {
-                AppLog.write(this, "WebView 화면 밖 후보 무시: '$nodeText' bounds=$originalRect")
+                AppLog.write(this, "[후보 무시] 화면 밖 WebView 노드 text='$nodeText' bounds=$originalRect")
+                return false
+            }
+            if (!isReasonableClickRect(originalRect)) {
+                AppLog.write(this, "[후보 무시] 클릭 영역이 지나치게 큼 text='$nodeText' bounds=$originalRect")
                 return false
             }
             return gestureClick(
@@ -286,16 +293,32 @@ class AttendanceAccessibilityService : AccessibilityService() {
             )
         }
 
+        AppLog.write(
+            this,
+            "[부모 탐색] 원본 영역이 작거나 비어 있음 text='$nodeText' width=${originalRect.width()} height=${originalRect.height()}"
+        )
+
         var target: AccessibilityNodeInfo? = node.parent
         for (depth in 1..MAX_PARENT_ASCENT) {
             val candidate = target ?: break
-            if (candidate.isVisibleToUser && candidate.isEnabled) {
-                val rect = Rect().also { candidate.getBoundsInScreen(it) }
-                if (!rect.isEmpty &&
-                    rect.width() >= MIN_NODE_SIZE_PX &&
-                    rect.height() >= MIN_NODE_SIZE_PX &&
-                    isRectOnScreen(rect)
-                ) {
+            val rect = Rect().also { candidate.getBoundsInScreen(it) }
+            AppLog.write(
+                this,
+                "[부모 후보] depth=$depth text='${displayText(candidate)}' visible=${candidate.isVisibleToUser} enabled=${candidate.isEnabled} bounds=$rect"
+            )
+
+            if (candidate.isVisibleToUser && candidate.isEnabled &&
+                !rect.isEmpty &&
+                rect.width() >= MIN_NODE_SIZE_PX &&
+                rect.height() >= MIN_NODE_SIZE_PX
+            ) {
+                if (!isRectOnScreen(rect)) {
+                    AppLog.write(this, "[부모 후보 무시] 화면 밖 depth=$depth bounds=$rect")
+                } else if (!isReasonableClickRect(rect)) {
+                    // 부모로 갈수록 영역은 더 커지므로 여기서 중단한다.
+                    AppLog.write(this, "[부모 후보 무시] 영역이 너무 커 잘못된 WebView 중앙 클릭 방지 depth=$depth bounds=$rect")
+                    break
+                } else {
                     return gestureClick(
                         rect.centerX().toFloat(),
                         rect.centerY().toFloat(),
@@ -306,7 +329,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
             target = candidate.parent
         }
 
-        AppLog.write(this, "후보 무시: 표시 영역을 확보하지 못함 '$nodeText' bounds=$originalRect")
+        AppLog.write(this, "[후보 무시] 화면 안의 유효 클릭 영역을 확보하지 못함 text='$nodeText' original=$originalRect")
         return false
     }
 
@@ -316,7 +339,8 @@ class AttendanceAccessibilityService : AccessibilityService() {
         return !rect.isEmpty &&
             rect.width() >= MIN_NODE_SIZE_PX &&
             rect.height() >= MIN_NODE_SIZE_PX &&
-            isRectOnScreen(rect)
+            isRectOnScreen(rect) &&
+            isReasonableClickRect(rect)
     }
 
     private fun isRectOnScreen(rect: Rect): Boolean {
@@ -326,6 +350,21 @@ class AttendanceAccessibilityService : AccessibilityService() {
         val cx = rect.centerX()
         val cy = rect.centerY()
         return cx in 0 until metrics.widthPixels && cy in 0 until metrics.heightPixels
+    }
+
+    private fun isReasonableClickRect(rect: Rect): Boolean {
+        val metrics = resources.displayMetrics
+        // 버튼 컨테이너를 찾는 과정에서 전체 WebView/화면 컨테이너까지 올라가
+        // 화면 중앙을 잘못 누르는 것을 차단한다.
+        return rect.height() <= (metrics.heightPixels * MAX_CLICK_HEIGHT_RATIO).toInt()
+    }
+
+    private fun isReasonableSubtreeCandidate(node: AccessibilityNodeInfo): Boolean {
+        if (!node.isVisibleToUser || !node.isEnabled) return false
+        val rect = Rect().also { node.getBoundsInScreen(it) }
+        if (rect.isEmpty || !isRectOnScreen(rect)) return false
+        if (!isReasonableClickRect(rect)) return false
+        return node.childCount in 1..MAX_SUBTREE_CHILDREN
     }
 
     private fun containsForbiddenWord(text: String): Boolean {
@@ -364,6 +403,11 @@ class AttendanceAccessibilityService : AccessibilityService() {
     private fun searchableText(node: AccessibilityNodeInfo): String =
         normalize(node.text) + normalize(node.contentDescription)
 
+    private fun displayText(node: AccessibilityNodeInfo): String =
+        listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
+            .joinToString(" | ")
+            .trim()
+
     private fun compactSubtreeText(root: AccessibilityNodeInfo): String? {
         if (!root.isVisibleToUser) return null
         val parts = ArrayList<String>(MAX_SUBTREE_NODES)
@@ -378,7 +422,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
         }
 
         walk(root, 0)
-        if (visited > MAX_SUBTREE_NODES || parts.isEmpty()) return null
+        if (parts.isEmpty()) return null
         val combined = parts.joinToString("")
         return combined.takeIf { it.length <= MAX_SUBTREE_TEXT_LENGTH }
     }
@@ -394,18 +438,23 @@ class AttendanceAccessibilityService : AccessibilityService() {
 
             val rect = Rect().also { node.getBoundsInScreen(it) }
             "[${node.viewIdResourceName ?: "-"}] t='$text' d='$desc' visible=${node.isVisibleToUser} enabled=${node.isEnabled} click=${node.isClickable} bounds=$rect"
-        }.take(35)
+        }.take(40)
 
         if (interesting.isNotEmpty()) {
-            AppLog.write(this, "화면 노드: ${interesting.joinToString(" | ")}")
+            AppLog.write(this, "[화면 노드] ${interesting.joinToString(" | ")}")
         }
     }
 
-    private fun scrollForward(): Boolean {
+    private fun scrollForward(where: String): Boolean {
         val metrics = resources.displayMetrics
         val x = metrics.widthPixels / 2f
-        val startY = metrics.heightPixels * 0.72f
-        val endY = metrics.heightPixels * 0.30f
+        val startY = metrics.heightPixels * 0.85f
+        val endY = metrics.heightPixels * 0.15f
+
+        AppLog.write(
+            this,
+            "[$where 스크롤] 제스처 실행 X=${x.toInt()} Y=${startY.toInt()}→${endY.toInt()} duration=${SCROLL_DURATION_MS}ms"
+        )
 
         val path = Path().apply {
             moveTo(x, startY)
@@ -413,10 +462,12 @@ class AttendanceAccessibilityService : AccessibilityService() {
         }
 
         val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, 320))
+            .addStroke(GestureDescription.StrokeDescription(path, 0, SCROLL_DURATION_MS))
             .build()
 
-        return dispatchGesture(gesture, null, null)
+        val accepted = dispatchGesture(gesture, null, null)
+        AppLog.write(this, "[$where 스크롤] dispatchGesture=${if (accepted) "accepted" else "rejected"}")
+        return accepted
     }
 
     private fun gestureClick(x: Float, y: Float, why: String): Boolean {
@@ -428,7 +479,7 @@ class AttendanceAccessibilityService : AccessibilityService() {
         val accepted = dispatchGesture(gesture, null, null)
         AppLog.write(
             this,
-            "제스처 ${if (accepted) "전달 성공" else "전달 실패"}: ($x,$y) $why"
+            "[제스처 전달] ${if (accepted) "accepted" else "rejected"}: X=${x.toInt()} Y=${y.toInt()} $why"
         )
         return accepted
     }
@@ -468,17 +519,20 @@ class AttendanceAccessibilityService : AccessibilityService() {
 
         private const val RUN_TIMEOUT_MS = 60_000L
         private const val VERIFY_WAIT_MS = 7_000L
-        private const val MAX_SCROLL = 7
+        private const val MAX_SCROLL = 10
         private const val MAX_ATTEND_CLICK = 2
         private const val MIN_NODE_SIZE_PX = 10
         private const val MAX_PARENT_ASCENT = 3
         private const val MAX_SUBTREE_DEPTH = 3
         private const val MAX_SUBTREE_NODES = 12
         private const val MAX_SUBTREE_TEXT_LENGTH = 80
+        private const val MAX_SUBTREE_CHILDREN = 8
+        private const val MAX_CLICK_HEIGHT_RATIO = 0.38f
+        private const val SCROLL_DURATION_MS = 600L
 
         private val BENEFIT_TAB_KEYWORDS = listOf("혜택", "이벤트", "benefits")
         private val BANNER_KEYWORDS = listOf("위클리 출석체크", "출석체크", "출석 체크", "매일 출석", "출석 이벤트", "스탬프")
-        private val ATTEND_KEYWORDS = listOf("출석 체크하기", "출석 체크", "오늘 출석", "출석하기", "스탬프 찍기", "참여하기", "체크인")
+        private val ATTEND_KEYWORDS = listOf("출석 체크하기", "출석체크하기", "출석 체크", "오늘 출석", "출석하기", "스탬프 찍기", "참여하기", "체크인")
         private val SUCCESS_WORDS = listOf("출석 완료", "오늘 출석 완료", "출석했습니다", "출석 성공", "내일 또", "already checked", "checked in")
 
         private val FORBIDDEN_WORDS = listOf("구매", "결제", "구독", "주문", "카드", "₩")
